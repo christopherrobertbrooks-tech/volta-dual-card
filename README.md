@@ -62,3 +62,74 @@ So the bandwidth concern was real but aimed at the wrong mode.
 
 See `volta-bonsai/ENVIRONMENT.md`. ComfyUI was stopped throughout; the 4070
 otherwise belongs to it.
+
+---
+
+# Part 2: a dense 27B, and why splitting made it *slower*
+
+`Qwen3.8-27B-Q8_0` (27.04 GiB, 27.32 B params — the base model Bonsai is
+quantised from), same card pair, `-fa 0 -p 512 -n 128 -r 2`.
+
+| config | pp512 | tg128 |
+| :--- | ---: | ---: |
+| **V100 alone** | **720.0 ± 39.5** | **23.07 ± 0.02** |
+| Both, `-sm layer` | 713.5 ± 0.3 | 20.86 ± 0.00 |
+| Both, `-sm row -mg 0` | — | **fails to load** |
+
+**Splitting cost 9.6% of decode here**, the opposite of the DeepSeek result
+above where it gained 5.5%.
+
+## Why the two models disagree
+
+Decode on a *dense* model is bound by weight bandwidth, and the two cards have
+very different memory:
+
+| card | memory | bandwidth |
+| :--- | :--- | ---: |
+| Tesla V100-PCIE | HBM2 | ~900 GB/s |
+| RTX 4070 | GDDR6X | ~504 GB/s |
+
+Layer split hands roughly 27% of the weights to the card with **half the
+bandwidth**, so a dense model decodes slower. DeepSeek-V2-Lite is a MoE with
+only ~2.4 B active parameters per token, so its weight traffic is small and the
+4070's share costs little while its compute helps.
+
+**Rule of thumb: splitting a dense model onto a lower-bandwidth card loses.**
+Layer split pays when the model does not fit otherwise, or when the second card
+is at least as fast — not as a general speed-up.
+
+## `-sm row` is unavailable on this pair
+
+It fails to load, and **not from memory pressure**: it fails identically with
+DeepSeek-V2-Lite at 9.65 GiB, which would need only ~4.8 GiB per card under a
+row split. Tested specifically to separate "row split broken" from "out of
+memory" — the small model rules out OOM.
+
+This matches [#27366](https://github.com/ggml-org/llama.cpp/issues/27366)
+("`-sm row` unavailable on CUDA") and extends it to a mixed sm_70/sm_89 pair.
+
+**Consequence: KV cannot be placed on a chosen card here.** `-mg` only
+redirects KV and intermediate results under `-sm row`; with `-sm layer` the KV
+for each layer lives on whichever card holds that layer. So "weights on the
+V100, KV cache on the 4070" is not achievable with current llama.cpp on this
+hardware.
+
+`llama-bench` reports only `failed to load model` with no cause, at any
+verbosity tried.
+
+## Incidental: what the ternary quantisation is worth
+
+Qwen3.8-27B is the base model for Ternary-Bonsai-2-27B, so these are directly
+comparable on the same card:
+
+| build | size | tg128 on V100 |
+| :--- | ---: | ---: |
+| Q8_0 (conventional) | 27.04 GiB | 23.07 |
+| Bonsai PQ2_0 (ternary) | 6.70 GiB | **51.0** |
+
+**4x smaller and 2.2x faster decode**, same weights underneath. Quality is not
+compared here — that needs a benchmark suite, not a stopwatch — but the model
+card's claim of 98.2% retention is at least being paid for with a real speed and
+footprint win on this hardware.
+
+No VRAM leak in any configuration; both cards returned to baseline each time.
