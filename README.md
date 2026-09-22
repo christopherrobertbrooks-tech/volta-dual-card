@@ -133,3 +133,38 @@ card's claim of 98.2% retention is at least being paid for with a real speed and
 footprint win on this hardware.
 
 No VRAM leak in any configuration; both cards returned to baseline each time.
+
+## Controlling the ratio with `-ts`: buying KV headroom by the slice
+
+`-ts` overrides the default VRAM-ratio split. Biasing toward the V100 recovers
+most of the loss, and the curve is almost perfectly linear.
+
+Qwen3.8-27B-Q8_0, `-sm layer -fa 0 -p 512 -n 128 -r 2`. Device 0 is the 4070,
+device 1 the V100.
+
+| `-ts` | 4070 share | pp512 | tg128 | decode cost | V100 free for KV |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `0/1` | 0% | 731.5 ± 25.9 | **23.07 ± 0.01** | — | ~4.7 GiB |
+| `1/19` | 5% | 730.6 ± 17.4 | 22.53 ± 0.01 | −2.3% | ~6.0 GiB |
+| `1/9` | 10% | 735.1 ± 16.8 | 22.09 ± 0.04 | −4.2% | ~7.4 GiB |
+| `1/4` | 20% | 721.2 ± 16.3 | 21.17 ± 0.06 | −8.2% | ~10.1 GiB |
+| `27/73` (default) | 27% | 709.2 ± 36.6 | 20.68 ± 0.02 | −10.4% | ~11.9 GiB |
+
+About **0.4% of decode per 1% of weights** moved to the slower card. That linear
+relationship is the bandwidth explanation confirmed rather than asserted.
+
+**Prefill is flat** across the whole range — prompt processing is compute-bound
+and both cards contribute compute. Only decode is bandwidth-sensitive.
+
+So while KV cannot be pinned to a chosen card, weights can be pushed off the
+V100 to make room for KV on it. 10% to the 4070 raises V100 headroom from ~4.7
+to ~7.4 GiB for 4.2% of decode — context bought by the slice rather than free.
+
+### `llama-bench` syntax trap
+
+`-ts` is **slash**-separated (`-ts 1/9`). A comma means *multiple test
+configurations*, so `-ts 0,1` silently runs two separate configs rather than one
+ratio. It printed a plausible 20.87 t/s — close enough to the real split figure
+to pass unnoticed — then failed on the second config. Same class of trap as the
+rest of this repo: the wrong invocation produced a believable number rather than
+an error.
