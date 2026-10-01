@@ -76,6 +76,9 @@ quantised from), same card pair, `-fa 0 -p 512 -n 128 -r 2`.
 | Both, `-sm layer` | 713.5 ± 0.3 | 20.86 ± 0.00 |
 | Both, `-sm row -mg 0` | — | **fails to load** |
 
+These are with `-fa 0`. The [buyer's table](https://github.com/christopherrobertbrooks-tech/legacy-gpu-llm-notes#is-a-used-v100-32gb-worth-it-measured-september-2026)
+reports 24 t/s for the same model with `-fa on` -- not a contradiction, a different flag.
+
 **Splitting cost 9.6% of decode here**, the opposite of the DeepSeek result
 above where it gained 5.5%.
 
